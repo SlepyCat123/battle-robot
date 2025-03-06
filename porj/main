@@ -1,0 +1,3663 @@
+/**********************************************************************************************************/
+
+#include "stm32f10x.h"
+#include "stdio.h"
+#include "mydef.h"
+#include "DigitalPID.c"
+
+/**********************************************************************************************************/
+
+extern  void GPIOA_Config(void);             	// 初始化GPIOA
+extern  void GPIOB_Config(void);             	// 初始化GPIOB 
+extern  void GPIOC_Config(void);             	// 初始化GPIOC 
+extern  void GPIOD_Config(void);             	// 初始化GPIOD
+extern  void GPIOE_Config(void);             	// 初始化GPIOE
+extern  void GPIOF_Config(void);             	// 初始化GPIOF
+extern  void TIM1_Configuration(void);       	// 初始化TIM1
+extern  void TIM2_Configuration(void); 				// 初始化TIM2
+extern  void TIM3_Configuration(void);				// 初始化TIM3
+extern  void TIM4_Configuration(void);   			// 初始化TIM4
+extern  void USART3_Configuration(void);     	// 初始化USART3串口硬件设备
+extern  void NVIC_Configuration(void);				// 初始化NVIC
+extern  void DMA_Configuration(void);					// 初始化DMA
+extern  void ADC1_Configuration(void);				// 初始化ADC1
+extern  void EXTI_Configuration(void);			  // 初始化EXTI
+extern  void usart3_send(u8 *trbuf,u16 BN);   // USART3发BN字节
+extern  void GPIO_lcd(void);
+
+extern  void SysTick_Initaize(void);
+extern  void delay_us(u32 nus);
+extern  void delay_ms(u16 nms); 
+extern  void lcd_test(void);
+extern  void myprintf_str(u8 x,u8 y,char* pa);
+
+/**********************************************************************************************************/
+//	left_speed=36,right_speed=36;//直行稳定速度
+
+#define Pitch_expect_Value    800
+#define Pitch_KP  			  0.05
+#define Pitch_KI   			  0.0
+#define Pitch_KD    		  0.0 
+
+#define Side_threshold        3150    // 侧面灰度值    2023.3.20 3150
+#define Grey_threshold        1000 	  // 前七个灰度阈值  2023.3.20 1000
+#define Grey_first_threshold  1700    // 2号灰度阈值
+//#define M_L_SPEED             32	  	// 中速左电机PWM值
+//#define M_R_SPEED             32	  	// 中速右电机PWM值
+
+#define M_L_SPEED             27.0	  	// 中速左电机PWM值20230302之前25.5
+#define M_R_SPEED             27.8	  	// 中速右电机PWM值
+#define LAST_SPEED            23
+#define H_L_SPEED             27.0  // 高速左电机PWM值2023.2.23   24.8
+#define H_R_SPEED             27.8      // 高速右电机PWM值2023.2.23   28
+//#define DIFF_SPEED          1500    // 左边比右边慢，加到左边的差速
+
+
+#define GoRight_L_SPEED             20.0	  	// 右转的左轮速度
+#define GoRight_R_SPEED             22.0	  	// 右转的右轮速度
+
+#define GoLeft_L_SPEED              22  			// 左转的左轮速度
+#define GoLeft_R_SPEED              19	  	// 左转的右轮速度19.6
+
+#define MSC_L_F2              M_L_SPEED*0.25   // 向左小幅偏离时左电机修正值
+#define MSC_R_F2              M_R_SPEED*0.25  // 向右小幅偏离时右电机修正值
+#define HSC_L_F2              H_L_SPEED*0.25   // 向左小幅偏离时左电机修正值
+#define HSC_R_F2              H_R_SPEED*0.25  // 向右小幅偏离时右电机修正值
+
+//#define MSC_L_F2              M_L_SPEED*0.35   // 向左小幅偏离时左电机修正值
+//#define MSC_R_F2              M_R_SPEED*0.3    // 向右小幅偏离时右电机修正值
+//#define HSC_L_F2              H_L_SPEED*0.35   // 向左小幅偏离时左电机修正值
+//#define HSC_R_F2              H_R_SPEED*0.3    // 向右小幅偏离时右电机修正值
+
+#define MSC_L_F4              M_L_SPEED*0.5   // 向左中幅偏离时左电机修正值
+#define MSC_R_F4              M_R_SPEED*0.5    // 向右中幅偏离时右电机修正值
+#define HSC_L_F4              H_L_SPEED*0.5   // 向左中幅偏离时左电机修正值
+#define HSC_R_F4              H_R_SPEED*0.5    // 向右中幅偏离时右电机修正值
+
+#define MSC_L_F8              M_L_SPEED*0.7   // 向左大幅偏离时左电机修正值
+#define MSC_R_F8              M_R_SPEED*0.7    // 向右大幅偏离时右电机修正值
+#define HSC_L_F8              H_L_SPEED*0.7   // 向左大幅偏离时左电机修正值
+#define HSC_R_F8              H_R_SPEED*0.7    // 向右大幅偏离时右电机修正值
+
+#define RT_LEN3               10
+#define PWM_CNT               1000            // 作用是？
+ 
+#define CPU_WORK_LED(a)       if(a) GPIO_SetBits(GPIOC, GPIO_Pin_11); else	 GPIO_ResetBits(GPIOC, GPIO_Pin_11)
+
+#define MOTOR_L_IN1(a)        if(a) GPIO_SetBits(GPIOA, GPIO_Pin_10); else	 GPIO_ResetBits(GPIOA, GPIO_Pin_10)
+#define MOTOR_L_IN2(a)        if(a) GPIO_SetBits(GPIOC, GPIO_Pin_8);  else	 GPIO_ResetBits(GPIOC, GPIO_Pin_8)
+#define MOTOR_R_IN3(a)        if(a) GPIO_SetBits(GPIOA, GPIO_Pin_11); else	 GPIO_ResetBits(GPIOA, GPIO_Pin_11)
+#define MOTOR_R_IN4(a)        if(a) GPIO_SetBits(GPIOC, GPIO_Pin_9);  else	 GPIO_ResetBits(GPIOC, GPIO_Pin_9)
+
+#define KEY_A                 GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_12)
+#define KEY_B                 GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_13)
+#define KEY_C                 GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_14)
+#define KEY_D                 GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15)
+
+//机械臂PWM控制微调
+#define FT_00                 0 // 手掌     -后 +前
+#define FT_01                 0 // 手肘     -下 +上
+#define FT_02                 0 // 大臂     -前 +后
+#define FT_03                 0 // 水平旋转 -右 +左
+#define FT_04                 0 // 收集斗   -下 +上
+
+/**********************************************************************************************************/
+
+float left_speed,right_speed;//0-99;
+
+u8 mode,FUN_ID=00,pwm_value,run_flag,motor_state;
+float PWM00=45,PWM01=41,PWM02=75,PWM03=70,PWM04=85,PWM5,PWM06,PWM07;
+int count;//作用是？
+u8 pwm[2][8]={{45,41,75,70,85,75,75,75},{25,25,25,25,25,25,25,25}};//25（0.5ms）--0°；75（1.5ms）--90°；125（2.5ms）--180°舵机的参数？
+  
+u16 TIM2_cnt,int_nums;  	
+
+#define Route_LEN1    4
+int xloca1[Route_LEN1]={0,0,2,2}; //按规则收集圆环
+int yloca1[Route_LEN1]={2,8,8,7};
+
+#define Route_LEN2    5
+int xloca2[Route_LEN2]={0,0,-3,-3,0}; //口字型左转
+int yloca2[Route_LEN2]={0,3,3,0,0};
+
+#define Route_LEN3    5
+int xloca3[Route_LEN3]={0,0,3,3,0}; //口字型右转
+int yloca3[Route_LEN3]={0,3,3,0,0};
+
+#define Route_LEN4    9
+int xloca4[Route_LEN4]={0,0,3,3,0,0,3,3,0}; //十字型
+int yloca4[Route_LEN4]={0,3,3,6,6,3,3,0,0};
+
+#define Route_LEN5    4
+int xloca5[Route_LEN5]={0,0,6,6}; //十字型
+int yloca5[Route_LEN5]={0,4,4,2};
+
+u16 rcvcnt3;
+u8  Re_update3,state_machine3,rcvdat3;
+u8  rebuf3[RT_LEN3];
+u8  trbuf3[RT_LEN3];
+
+u8  Sensor_State[M]; //用来存放传感器数字化后的状态 0--白 1-黑
+u16 AD_Value[N][M];  //用来存放ADC转换结果，也是DMA的目标地址
+u16 After_filter[M]; //用来存放求平均值之后的结果
+
+/**********************************************************************************************************
+*函 数 名: void EXTI10_15IRQHandler(void)
+*功能说明: 外部10中断服务程序
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void EXTI15_10_IRQHandler(void)
+{
+	if (EXTI_GetITStatus(EXTI_Line15) == SET)
+	{
+		int_nums++;
+		if(motor_state==0x55)
+		{
+			if(KEY_A==1)pwm_value=10;
+			if(KEY_B==1)pwm_value=50;
+			if(KEY_C==1)pwm_value=75;
+			if(KEY_D==1)run_flag=0xAA;
+		}		
+		if(motor_state==0xAA)
+		{
+			if(KEY_D==0)run_flag=0x55;
+		}
+		EXTI_ClearITPendingBit(EXTI_Line15);                //清除中断标志位
+	}
+}
+
+/**********************************************************************************************************
+*函 数 名: void TIM3_IRQHandler(void)
+*功能说明: TIM3中断服务程序
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void TIM3_IRQHandler(void)
+{ 
+	count++;
+	if(count==PWM_CNT) count=0;
+	if(count<pwm[0][0]){PEout( 7)=1;} else{PEout( 7)=0;}
+	if(count<pwm[0][1]){PEout( 8)=1;} else{PEout( 8)=0;}
+	if(count<pwm[0][2]){PEout( 9)=1;} else{PEout( 9)=0;}
+	if(count<pwm[0][3]){PEout(10)=1;} else{PEout(10)=0;}
+	if(count<pwm[0][4]){PEout(11)=1;} else{PEout(11)=0;}
+	if(count<pwm[0][5]){PEout(12)=1;} else{PEout(12)=0;}
+	if(count<pwm[0][6]){PEout(13)=1;} else{PEout(13)=0;}
+	if(count<pwm[0][7]){PEout(14)=1;} else{PEout(14)=0;}
+	if(count<pwm[1][0]){PFout( 3)=1;} else{PFout( 3)=0;}
+	if(count<pwm[1][1]){PFout( 4)=1;} else{PFout( 4)=0;}
+	if(count<pwm[1][2]){PFout( 5)=1;} else{PFout( 5)=0;}
+	if(count<pwm[1][3]){PFout( 6)=1;} else{PFout( 6)=0;}
+	if(count<pwm[1][4]){PFout( 7)=1;} else{PFout( 7)=0;}
+	if(count<pwm[1][5]){PFout( 8)=1;} else{PFout( 8)=0;}
+	if(count<pwm[1][6]){PFout( 9)=1;} else{PFout( 9)=0;}
+	if(count<pwm[1][7]){PFout(10)=1;} else{PFout(10)=0;}
+			
+	TIM_ClearITPendingBit(TIM3, TIM_IT_Update); //清除TIM2溢出中断标志	  
+
+}//end of TIM3_IRQHandler
+
+/**********************************************************************************************************
+* 函数名称 ：TIM2_IRQHandler(void)
+* 功能描述 ：TIM2时钟中断服务程序
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void TIM2_IRQHandler(void)
+{
+	TIM_ClearITPendingBit(TIM2, TIM_IT_Update); //清除TIM2溢出中断标志
+
+  if(pwm[0][0]<PWM00)pwm[0][0]++;else if(pwm[0][0]>PWM00)pwm[0][0]--;
+  if(pwm[0][1]<PWM01)pwm[0][1]++;else if(pwm[0][1]>PWM01)pwm[0][1]--;
+  if(pwm[0][2]<PWM02)pwm[0][2]++;else if(pwm[0][2]>PWM02)pwm[0][2]--;
+  if(pwm[0][3]<PWM03)pwm[0][3]++;else if(pwm[0][3]>PWM03)pwm[0][3]--;
+  if(pwm[0][4]<PWM04)pwm[0][4]++;else if(pwm[0][4]>PWM04)pwm[0][4]--;		
+
+	TIM2_cnt++;
+	if(TIM2_cnt==5)
+	{
+		//CPU_WORK_LED(1);
+	}
+	if(TIM2_cnt==10) 
+	{
+		TIM2_cnt=0;
+		//CPU_WORK_LED(0);
+	}
+}//end of TIM2_IRQHandler
+
+/**********************************************************************************************************
+*函 数 名: void Filter(void)
+*功能说明: 采集数据求平均，并根据阈值进行数字化
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Filter(void)
+{
+	u8 i;
+	for(i=0;i<M;i++)
+	{
+        // 三次采样取中间值		
+		if( AD_Value[0][i] >= AD_Value[1][i] )
+		{
+			if( AD_Value[1][i] <= AD_Value[2][i])
+				 After_filter[i] = AD_Value[1][i];
+			else 
+				if( AD_Value[0][i] >= AD_Value[2][i])
+				    After_filter[i] = AD_Value[2][i];
+				else 
+					After_filter[i] = AD_Value[0][i];
+		}
+		else 
+		{
+			if( AD_Value[1][i] <= AD_Value[2][i] )
+				After_filter[i] = AD_Value[1][i];
+			else 
+				if( AD_Value[0][i] >= AD_Value[2][i] )
+					After_filter[i] = AD_Value[0][i];
+				else 
+					After_filter[i] = AD_Value[2][i];
+		}
+
+		
+	if(i==1)
+		{
+		if(After_filter[i]<Grey_first_threshold)
+		{
+			Sensor_State[i]=0;//白线2023.2.21
+		}
+		else
+		{
+			Sensor_State[i]=1;//黑线
+		}
+		}
+	else 	if(i==7||i==15)
+		{
+		if(After_filter[i]<Side_threshold)
+		{
+			Sensor_State[i]=0;//白线
+		}
+		else
+		{
+			Sensor_State[i]=1;//黑线
+		}
+		}
+	else
+	{
+		if(After_filter[i]<Grey_threshold)
+		{
+			Sensor_State[i]=0;
+		}
+		else
+		{
+			Sensor_State[i]=1;
+		}
+		}
+		
+	}
+}
+
+/**********************************************************************************************************
+* 函数名称 ：int READ_Value(u8 *P)
+* 功能描述 ：根据7路灰度传感器的状态--在白线上，给每个传感器幅值（8 4 2 0 -2 -4 -8），得出累加和。
+* 形     参：u8 *p,传入首个传感器状态存储位置，例如前置传感器&Sensor_State[0]，后置传感器&Sensor_State[8]
+* 返  回 值: int result
+**********************************************************************************************************/
+int READ_Value(u8 *P)
+{
+ int value[7],result; 
+
+ Filter();
+ if(P[0]==0)value[0]=8 ;else value[0]=0;
+ if(P[1]==0)value[1]=4 ;else value[1]=0;
+ if(P[2]==0)value[2]=2 ;else value[2]=0; 
+ if(P[3]==0)value[3]=0 ;else value[3]=0; 
+ if(P[4]==0)value[4]=-2;else value[4]=0; 
+ if(P[5]==0)value[5]=-4;else value[5]=0; 
+ if(P[6]==0)value[6]=-8;else value[6]=0;    
+    
+ result=value[0]+value[1]+value[2]+value[3]+value[4]+value[5]+value[6];
+
+
+ if(((P[2]==0)&&(P[3]==0)&&(P[4]==0)))//中间三个传感器全在白线上，则认为遇到十字路口
+ {
+ 		result=-1;// 路口--白线
+ }
+ else if((P[0]==1)&&(P[1]==1)&&(P[2]==1)&&(P[3]==1)&&(P[4]==1)&&(P[5]==1)&&(P[6]==1))//七个传感器都在黑色区域，则认为出错
+ {
+ 	 result=99;// 出错--全黑
+ }
+	return result;
+}
+
+void GO_Down(void)
+{
+    left_speed=24.80;
+    right_speed=28;//2022.6.28 L:24.8 R=28
+    MOTOR_L_IN1(1);MOTOR_L_IN2(0); TIM_SetCompare1(TIM1,100*left_speed+200);
+    MOTOR_R_IN3(0);MOTOR_R_IN4(1); TIM_SetCompare2(TIM1,100*right_speed);
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Stright(void)
+* 功能描述 ：根据给定占空比的值，左右电机直行,该版本左轮27，右轮25，基本能直行
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void GO_Stright(void)
+{ 	 
+   if(left_speed>100 )left_speed =M_L_SPEED;
+   if(right_speed>100)right_speed=M_R_SPEED;
+   MOTOR_L_IN1(1);MOTOR_L_IN2(0); TIM_SetCompare1(TIM1,100*left_speed); // 2023.2.24   +200
+   MOTOR_R_IN3(0);MOTOR_R_IN4(1); TIM_SetCompare2(TIM1,100*right_speed);
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Brake(void)
+* 功能描述 ：占空比设置为0，使左右电机刹车
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void GO_Brake(void)
+{ 
+   TIM_SetCompare1(TIM1,0);  
+   TIM_SetCompare2(TIM1,0);
+   MOTOR_L_IN1(0);MOTOR_L_IN2(1);
+   MOTOR_R_IN3(1);MOTOR_R_IN4(0);
+   delay_ms(100);//考虑惯性，等待机器完全停止
+}
+/**********************************************************************************************************
+* 函数名称 ：void MT_FORWARD(void)
+* 功能描述 ：二分区后退到十字口
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void MT_FORWARD(void)
+{ 
+	
+  GO_Brake();
+  delay_ms(50);
+  left_speed=26.8,right_speed=27.8;
+  MOTOR_L_IN1(1);MOTOR_L_IN2(0);TIM_SetCompare1(TIM1,100*left_speed);  //左轮反转
+  MOTOR_R_IN3(0);MOTOR_R_IN4(1);TIM_SetCompare2(TIM1,100*right_speed); //右轮前进
+  delay_ms(1000);  
+
+	GO_Brake();//2023.2.24添加GO_Brake,看看前半弯停在哪
+
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void MT_BACK(void)
+* 功能描述 ：二分区后退到十字口
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void MT_BACK(void)
+{ 
+	
+  GO_Brake();
+  delay_ms(50);
+  left_speed=30,right_speed=27.8;
+  MOTOR_L_IN1(1);MOTOR_L_IN2(0);TIM_SetCompare1(TIM1,100*left_speed);  //左轮反转
+  MOTOR_R_IN3(1);MOTOR_R_IN4(0);TIM_SetCompare2(TIM1,100*right_speed); //右轮前进
+  delay_ms(1000);
+	GO_Brake();//2023.2.24添加GO_Brake,看看前半弯停在哪
+
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Left(void)
+* 功能描述 ：遇到十字路口时，让机器左转
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void GO_Left(void)
+{
+GO_Brake();
+  delay_ms(50);
+  left_speed=H_L_SPEED,right_speed=H_R_SPEED;//2023.2.24之前right_speed=25
+  GO_Stright(); 
+  while(1)//等待机器重心位置到达十字路口中心
+  {
+  	Filter();
+  	if((Sensor_State[7]==0)&&(Sensor_State[15]==0))break;	
+  }
+  GO_Brake();
+  left_speed= GoLeft_L_SPEED ,right_speed= GoLeft_R_SPEED ;//可能转弯阻力大，要把速度提上去2023.2.28之前right_speed=35.6
+  MOTOR_L_IN1(0);MOTOR_L_IN2(1);TIM_SetCompare1(TIM1,100*left_speed);  //左轮前进
+  MOTOR_R_IN3(0);MOTOR_R_IN4(1);TIM_SetCompare2(TIM1,100*right_speed); //右轮后退
+  delay_ms(600); //等待机器发生转弯，避免传感器错判以为转弯动作完成
+	//GO_Brake();//2023.2.24添加GO_Brake,看看前半弯停在哪
+
+  while(1)
+  {
+  	if((READ_Value(&Sensor_State[0])==-8)||(READ_Value(&Sensor_State[0])==-4)||(READ_Value(&Sensor_State[0])==-2)||(READ_Value(&Sensor_State[0])==99)||(READ_Value(&Sensor_State[0])==2))
+  	{
+  		left_speed= GoLeft_L_SPEED,right_speed= GoLeft_R_SPEED;//减速继续转弯，可以根据实际情况再细化//2023.2.24之前right_speed=25
+     	TIM_SetCompare1(TIM1,100*left_speed);  
+     	TIM_SetCompare2(TIM1,100*right_speed);   
+  	}  
+//  	if(READ_Value(&Sensor_State[0])==0 && ((Sensor_State[0]!=0)&&(Sensor_State[6]!=0)))//转弯动作完成
+//  	{
+//			GO_Brake();	
+//			break;  
+//		} 	   //注释内容为2023.2.24之前的内容
+  	if(READ_Value(&Sensor_State[0])==0 && ((Sensor_State[0]!=0)&&(Sensor_State[6]!=0))&&((Sensor_State[1]!=0)&&(Sensor_State[5]!=0)))//转弯动作完成
+  	{
+			GO_Brake();	
+			break;  
+		}    	
+
+  }
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Right(void)
+* 功能描述 ：遇到十字路口时，让机器右转
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void GO_Right(void)
+{
+  GO_Brake();
+  delay_ms(50);
+  left_speed=H_L_SPEED,right_speed=H_R_SPEED;//2023.2.24之前right_speed=25
+  GO_Stright(); 
+  while(1)//等待机器重心位置到达十字路口中心
+  {
+  	Filter();
+  	if((Sensor_State[7]==0)&&(Sensor_State[15]==0))break;	
+  }
+  GO_Brake();
+  left_speed= GoRight_L_SPEED ,right_speed= GoRight_R_SPEED ;//可能转弯阻力大，要把速度提上去2023.2.28之前right_speed=35.6
+  MOTOR_L_IN1(1);MOTOR_L_IN2(0);TIM_SetCompare1(TIM1,100*left_speed);  //左轮前进
+  MOTOR_R_IN3(1);MOTOR_R_IN4(0);TIM_SetCompare2(TIM1,100*right_speed); //右轮后退
+  delay_ms(380); //等待机器发生转弯，避免传感器错判以为转弯动作完成
+	//GO_Brake();//2023.2.24添加GO_Brake,看看前半弯停在哪
+
+  while(1)
+  {
+  	
+  	if((READ_Value(&Sensor_State[0])==-8)||(READ_Value(&Sensor_State[0])==-4)||(READ_Value(&Sensor_State[0])==-2)||(READ_Value(&Sensor_State[0])==99)||(READ_Value(&Sensor_State[0])==2))
+  	{
+  		left_speed= GoRight_L_SPEED,right_speed= GoRight_R_SPEED;//减速继续转弯，可以根据实际情况再细化//2023.2.24之前right_speed=25
+     	TIM_SetCompare1(TIM1,100*left_speed);  
+     	TIM_SetCompare2(TIM1,100*right_speed);   
+  	}  
+//  	if(READ_Value(&Sensor_State[0])==0 && ((Sensor_State[0]!=0)&&(Sensor_State[6]!=0)))//转弯动作完成
+//  	{
+//			GO_Brake();	
+//			break;  
+//		} 	   //注释内容为2023.2.24之前的内容
+		 //if(READ_Value(&Sensor_State[0])==-2&& ((Sensor_State[0]!=0)&&(Sensor_State[6]!=0)&&(Sensor_State[1]!=0)&&(Sensor_State[5]!=0)))//转弯动作完成
+		 if(((Sensor_State[3]==0)&&(Sensor_State[1]!=0)&&(Sensor_State[5]!=0)))//转弯动作完成
+  	{
+			GO_Brake();	
+			break;  
+		} 	   	
+
+  }
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Back(void)
+* 功能描述 ：遇到十字路口时，让机器掉头
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void GO_Back(void)
+{ 
+  left_speed=25,right_speed=25;
+  GO_Stright();
+  while(1)//等待机器重心位置到达十字路口中心
+  {
+  	Filter();
+  	if((Sensor_State[7]==0)&&(Sensor_State[15]==0))break;	
+  }
+  GO_Brake();
+  left_speed=30,right_speed=30;//右转
+  MOTOR_L_IN1(1);MOTOR_L_IN2(0);TIM_SetCompare1(TIM1,100*left_speed); //左轮前进 
+  MOTOR_R_IN3(1);MOTOR_R_IN4(0);TIM_SetCompare2(TIM1,100*right_speed);//右轮后退
+  while(1)
+  {
+  	if((READ_Value(&Sensor_State[0])==8)||(READ_Value(&Sensor_State[0])==4))
+  	{
+  		break;
+  	}  	
+  }
+  while(1)
+  {
+  	if(READ_Value(&Sensor_State[0])==0)
+  	{
+  		break;
+  	}  	
+  }
+  while(1)
+  {
+  	if((READ_Value(&Sensor_State[0])==8)||(READ_Value(&Sensor_State[0])==4))
+  	{
+  		break;
+  	}  	
+  } 
+  
+  while(1)
+  {
+  	if((READ_Value(&Sensor_State[0])==-8)||(READ_Value(&Sensor_State[0])==-4)||(READ_Value(&Sensor_State[0])==-2))
+  	{
+  		left_speed=30,right_speed=30;//减速
+  		TIM_SetCompare1(TIM1,100*left_speed);
+  		TIM_SetCompare2(TIM1,100*right_speed);
+  		break;
+  	}
+  }
+  while(1)
+  {
+  	if(READ_Value(&Sensor_State[0])==0)
+  	{
+  		GO_Brake();
+  		break;
+  	}
+  } 
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Draw_Back(void)
+* 功能描述 ：遇到十字路口时，让机器不计路口掉头
+* 形     参：无
+* 返  回 值: 无
+**********************************************************************************************************/
+void GO_Draw_Back(void)//电机后退
+{ 
+  left_speed=24.8,right_speed=28;
+
+  MOTOR_L_IN1(0);MOTOR_L_IN2(1);TIM_SetCompare1(TIM1,100*left_speed); //左轮后退
+  MOTOR_R_IN3(1);MOTOR_R_IN4(0);TIM_SetCompare2(TIM1,100*right_speed);//右轮后退
+//  GO_Back ();
+// GO_Brake();
+	
+}
+
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Grid(int number)
+* 功能描述 ：
+* 形     参：int number
+* 返  回 值: 无 
+**********************************************************************************************************/
+void GO_Grid_MTEST(int number)
+{
+
+  u8 time=0,lock=0,led_flag=0x55;
+  u8 lock_left=0,lock_right=0;
+	CPU_WORK_LED(1);
+	
+	
+  while(1)
+  {  
+	  if(READ_Value(&Sensor_State[0])==-1)//十字路口
+	  { 
+			 delay_ms(5);
+			 if(READ_Value(&Sensor_State[0])==-1)		
+			 {
+				 if(lock==1)
+				 {
+					 time++;
+					 lock=0;
+					 led_flag=~led_flag;
+					 if(led_flag==0x55)CPU_WORK_LED(0);else CPU_WORK_LED(1);
+				 } 
+	     if(time==number){ break;}
+			}
+	  }
+	  
+	  else if(READ_Value(&Sensor_State[0])==-2)//沿着第二个传感器直行  
+	  {
+	     if(time==number-1||time==0){left_speed=M_L_SPEED;right_speed=M_R_SPEED;lock_left=0;lock_right=0;}//中速
+	     else                       {left_speed=H_L_SPEED;right_speed=H_R_SPEED;lock_left=0;lock_right=0;}//高速
+	     GO_Stright();
+			 lock=1;
+	  }
+	  
+	  else if(READ_Value(&Sensor_State[0])==-4)//向左小偏，往右小拐
+	  {
+	     if(lock_left==0&&(time==number-1||time==0) )    {left_speed=(M_L_SPEED+MSC_L_F2);right_speed=M_R_SPEED;lock_left=0;lock_right=0;}
+	     else if(lock_left==0&&(time!=number-1&&time!=0)){left_speed=(H_L_SPEED+HSC_L_F2);right_speed=H_R_SPEED;lock_left=0;lock_right=0;}    
+	     GO_Stright(); 
+         lock=1;//修改路口漏数		 
+	  }
+	  else if(READ_Value(&Sensor_State[0])==-8)//向左中偏，往右中拐
+	  {
+	     if(lock_left==0&&(time==number-1||time==0) )    {left_speed=(M_L_SPEED+MSC_L_F4);right_speed=M_R_SPEED;lock_left=0;lock_right=0;}
+	     else if(lock_left==0&&(time!=number-1&&time!=0)){left_speed=(H_L_SPEED+HSC_L_F4);right_speed=H_R_SPEED;lock_left=0;lock_right=0;}    
+	     GO_Stright();
+         lock=1;//修改路口漏数		 
+	  }
+//	  else if(READ_Value(&Sensor_State[0])==-8)//向左大偏，往右大拐
+//	  {
+//	     if(lock_left==0&&(time==number-1||time==0) )    {left_speed=(M_L_SPEED+MSC_L_F8);right_speed=M_R_SPEED;lock_left=0;lock_right=0;}
+//	     else if(lock_left==0&&(time!=number-1&&time!=0)){left_speed=(H_L_SPEED+HSC_L_F8);right_speed=H_R_SPEED;lock_left=0;lock_right=0;}    
+//	     GO_Stright(); 
+//         lock=1;//修改路口漏数 
+//	  }
+
+	  else if(READ_Value(&Sensor_State[0])==0)//先右小偏，往左小拐
+	  {      
+	    if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F2+15);lock_left=0;lock_right=0;}
+	    else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F2+15);lock_left=0;lock_right=0;}
+         //if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F2);lock_left=0;lock_right=0;}
+	     //else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F2);lock_left=0;lock_right=0;}
+	     GO_Stright(); 
+         lock=1;//修改路口漏数
+	  }
+		
+	  else if(READ_Value(&Sensor_State[0])==2)//向右中偏，往左中拐
+	  {      
+	     if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F4);lock_left=0;lock_right=0;}
+	     else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F4);lock_left=0;lock_right=0;}
+	     GO_Stright(); 
+         lock=1;//修改路口漏数
+	  }
+		
+	  else if(READ_Value(&Sensor_State[0])==8||READ_Value(&Sensor_State[0])==4)//向右大偏，往左大拐
+	  {      
+	     if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F8);lock_left=0;lock_right=0;}
+	     else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F8);lock_left=0;lock_right=0;}
+	     GO_Stright();
+         lock=1;//修改路口漏数 
+	  }
+	  	  	  
+	  else if(READ_Value(&Sensor_State[0])==99) //机器处于异常情况
+	  {    
+	     left_speed=23;right_speed=23;GO_Stright(); 
+	  }  
+  }
+}
+
+
+
+
+
+/**********************************************************************************************************
+* 函数名称 ：void GO_Grid(int number)
+* 功能描述 ：
+* 形     参：int number
+* 返  回 值: 无 
+**********************************************************************************************************/
+void GO_Grid(int number)
+{
+  u8 time=0,lock=0,led_flag=0x55;
+  u8 lock_left=0,lock_right=0;
+	CPU_WORK_LED(1);
+  while(1)
+  {  
+	  if(READ_Value(&Sensor_State[0])==-1)//十字路口
+	  { 
+			 delay_ms(5);
+			 if(READ_Value(&Sensor_State[0])==-1)		
+			 {
+				 if(lock==1)
+				 {
+					 time++;
+					 lock=0;
+					 led_flag=~led_flag;
+					 if(led_flag==0x55)CPU_WORK_LED(0);else CPU_WORK_LED(1);
+				 } 
+	     if(time==number){ break;}
+			}
+	  }
+	  
+	  else if(READ_Value(&Sensor_State[0])==0)//直行  
+	  {
+	     if(time==number-1||time==0){left_speed=M_L_SPEED;right_speed=M_R_SPEED;lock_left=0;lock_right=0;}//中速
+	     else                       {left_speed=H_L_SPEED;right_speed=H_R_SPEED;lock_left=0;lock_right=0;}//高速
+	     GO_Stright();
+			 lock=1;
+	  }
+	  
+	  else if(READ_Value(&Sensor_State[0])==-2)//向左小偏，往右小拐
+	  {
+	     if(lock_left==0&&(time==number-1||time==0) )    {left_speed=(M_L_SPEED+MSC_L_F2);right_speed=M_R_SPEED;lock_left=0;lock_right=0;}
+	     else if(lock_left==0&&(time!=number-1&&time!=0)){left_speed=(H_L_SPEED+HSC_L_F2);right_speed=H_R_SPEED;lock_left=0;lock_right=0;}    
+	     GO_Stright(); 
+         lock=1;//修改路口漏数		 
+	  }
+	  else if(READ_Value(&Sensor_State[0])==-4)//向左中偏，往右中拐
+	  {
+	     if(lock_left==0&&(time==number-1||time==0) )    {left_speed=(M_L_SPEED+MSC_L_F4);right_speed=M_R_SPEED;lock_left=0;lock_right=0;}
+	     else if(lock_left==0&&(time!=number-1&&time!=0)){left_speed=(H_L_SPEED+HSC_L_F4);right_speed=H_R_SPEED;lock_left=0;lock_right=0;}    
+	     GO_Stright();
+         lock=1;//修改路口漏数		 
+	  }
+	  else if(READ_Value(&Sensor_State[0])==-8)//向左大偏，往右大拐
+	  {
+	     if(lock_left==0&&(time==number-1||time==0) )    {left_speed=(M_L_SPEED+MSC_L_F8);right_speed=M_R_SPEED;lock_left=0;lock_right=0;}
+	     else if(lock_left==0&&(time!=number-1&&time!=0)){left_speed=(H_L_SPEED+HSC_L_F8);right_speed=H_R_SPEED;lock_left=0;lock_right=0;}    
+	     GO_Stright(); 
+         lock=1;//修改路口漏数 
+	  }
+	  	  	  
+	  else if(READ_Value(&Sensor_State[0])==2)//先右小偏，往左小拐
+	  {      
+	    if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F2+15);lock_left=0;lock_right=0;}
+	    else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F2+15);lock_left=0;lock_right=0;}
+         //if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F2);lock_left=0;lock_right=0;}
+	     //else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F2);lock_left=0;lock_right=0;}
+	     GO_Stright(); 
+         lock=1;//修改路口漏数
+	  }
+		
+	  else if(READ_Value(&Sensor_State[0])==4)//向右中偏，往左中拐
+	  {      
+	     if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F4);lock_left=0;lock_right=0;}
+	     else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F4);lock_left=0;lock_right=0;}
+	     GO_Stright(); 
+         lock=1;//修改路口漏数
+	  }
+		
+	  else if(READ_Value(&Sensor_State[0])==8)//向右大偏，往左大拐
+	  {      
+	     if(lock_right==0&&(time==number-1||time==0) )    {left_speed=M_L_SPEED;right_speed=(M_R_SPEED+MSC_R_F8);lock_left=0;lock_right=0;}
+	     else if(lock_right==0&&(time!=number-1&&time!=0)){left_speed=H_L_SPEED;right_speed=(H_R_SPEED+HSC_R_F8);lock_left=0;lock_right=0;}
+	     GO_Stright();
+         lock=1;//修改路口漏数 
+	  }
+	  	  	  
+	  else if(READ_Value(&Sensor_State[0])==99) //机器处于异常情况
+	  {    
+	     left_speed=23;right_speed=23;GO_Stright(); 
+	  }  
+  }
+}
+
+/**********************************************************************************************************
+* 函数名称 ：void select_mode(int difx,int dify)
+* 功能描述 ：
+* 形     参：int difx,int dify
+* 返  回 值: 无
+**********************************************************************************************************/
+void select_mode(int difx,int dify)
+{
+  
+  if(mode==1)
+  {
+     if(difx==0 && dify>0 )      {GO_Grid(dify);            mode=1;}      //1 
+     else if(difx>0  && dify==0) {GO_Right();GO_Grid(difx); mode=3;}      //3
+     else if(difx==0 && dify<0 ) {GO_Back(); GO_Grid(-dify);mode=5;}      //5
+     else if(difx<0  && dify==0) {GO_Left(); GO_Grid(-difx);mode=7;}      //7
+	}
+  else if(mode==3)
+  {
+     if(difx==0 && dify>0 )      {GO_Left();GO_Grid(dify);  mode=1;}      //1 
+     else if(difx>0  && dify==0) {GO_Grid(difx);            mode=3;}      //3
+     else if(difx==0 && dify<0 ) {GO_Right();GO_Grid(-dify);mode=5;}      //5
+     else if(difx<0  && dify==0) {GO_Back();GO_Grid(-difx); mode=7;}      //7
+	}
+  else if(mode==5)
+  {
+     if(difx==0 && dify>0 )      {GO_Back();GO_Grid(dify);  mode=1;}      //1 
+     else if(difx>0  && dify==0) {GO_Left();GO_Grid(difx);  mode=3;}      //3
+     else if(difx==0 && dify<0 ) {GO_Grid(-dify);           mode=5;}      //5
+     else if(difx<0  && dify==0) {GO_Right();GO_Grid(-difx);mode=7;}      //7
+	}
+  else if(mode==7)
+  {
+     if(difx==0 && dify>0 )      {GO_Right();GO_Grid(dify); mode=1;}      //1 
+     else if(difx>0  && dify==0) {GO_Back();GO_Grid(difx);  mode=3;}      //3
+     else if(difx==0 && dify<0 ) {GO_Left();GO_Grid(-dify); mode=5;}      //5
+     else if(difx<0  && dify==0) {GO_Grid(-difx);           mode=7;}      //7
+	}
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUNID_read(void)
+*功能说明: FUN_ID读取
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUNID_read(void)	
+{
+	
+	FUN_ID=15-(KEY_D*8+KEY_C*4+KEY_B*2+KEY_A);
+//	if((KEY_D==0)&&(KEY_C==0)&&(KEY_B==0)&&(KEY_A==0))
+//	{
+//		FUN_ID=15; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==0)&&(KEY_B==0)&&(KEY_A==1))
+//	{
+//		FUN_ID=14; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==0)&&(KEY_B==1)&&(KEY_A==0))
+//	{
+//		FUN_ID=13; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==0)&&(KEY_B==1)&&(KEY_A==1))
+//	{
+//		FUN_ID=12; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==1)&&(KEY_B==0)&&(KEY_A==0))
+//	{
+//		FUN_ID=11; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==1)&&(KEY_B==0)&&(KEY_A==1))
+//	{
+//		FUN_ID=10; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==1)&&(KEY_B==1)&&(KEY_A==0))
+//	{
+//		FUN_ID=9; 
+//	}
+//	else if((KEY_D==0)&&(KEY_C==1)&&(KEY_B==1)&&(KEY_A==1))
+//	{
+//		FUN_ID=8; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==0)&&(KEY_B==0)&&(KEY_A==0))
+//	{
+//		FUN_ID=7; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==0)&&(KEY_B==0)&&(KEY_A==1))
+//	{
+//		FUN_ID=6; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==0)&&(KEY_B==1)&&(KEY_A==0))
+//	{
+//		FUN_ID=5; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==0)&&(KEY_B==1)&&(KEY_A==1))
+//	{
+//		FUN_ID=4; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==1)&&(KEY_B==0)&&(KEY_A==0))
+//	{
+//		FUN_ID=3; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==1)&&(KEY_B==0)&&(KEY_A==1))
+//	{
+//		FUN_ID=2; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==1)&&(KEY_B==1)&&(KEY_A==0))
+//	{
+//		FUN_ID=1; 
+//	}
+//	else if((KEY_D==1)&&(KEY_C==1)&&(KEY_B==1)&&(KEY_A==1))
+//	{
+//		FUN_ID=0; 
+	}
+/**********************************************************************************************************
+*函 数 名: void Steering_init(void)
+*功能说明: 舵机位置初始化--机械臂和收集装置都处于直立状态
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Steering_init(void)
+{
+//（理论不能小于25，实际要看机械位置是否会卡住）(理论不能大于125，实际要看机械位置是否会卡住)
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+    
+	  //手掌关节
+    PWM00=45;//值越小越往前，越大越往后
+    //手肘关节
+	  PWM01=40;//值越小越往下，越大越往上   
+    //大臂关节
+  	PWM02=74;//值越小越往后，越大越往前   
+    //水平旋转关节
+	  //PWM03=78;//值越小越往右，越大越往左
+   	PWM03=70;//值越小越往右，越大越往左   71
+
+		//收集斗
+		PWM04=83;//值越小越往下，越大越往上
+
+	
+	delay_ms(1000);
+	delay_ms(1000);
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grab_L_F(void)
+*功能说明: 圆环抓取 收集斗左前圆环
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grab_L_F(void)
+{
+
+  TIM_Cmd(TIM3, ENABLE);
+	 
+  PWM03=73+FT_03;PWM00=62;PWM01=42;  //PWM03=73 PWM01=43
+	delay_ms(500);
+	PWM02=39; //PWM02=39;
+	delay_ms(1000);
+	pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+	pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+	delay_ms(1000);
+	PWM03=74+FT_03;PWM02=54;PWM00=54;PWM01=47;//抬手
+	delay_ms(1000);
+	PWM03=74+FT_03;PWM02=52;PWM00=55;PWM01=60;//抬手
+	delay_ms(1000);
+    
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grab_L_B(void)
+*功能说明: 圆环抓取 收集斗左后圆环
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grab_L_B(void)
+{
+	
+//		  //手掌关节
+//    PWM00=45;//值越小越往前，越大越往后
+//    //手肘关节
+//	  PWM01=40;//值越小越往下，越大越往上   
+//    //大臂关节
+//  	PWM02=74;//值越小越往后，越大越往前   
+//    //水平旋转关节
+//	  //PWM03=78;//值越小越往右，越大越往左
+//   	PWM03=70;//值越小越往右，越大越往左   71
+	
+    TIM_Cmd(TIM3, ENABLE);
+    
+  PWM03=74+FT_03;PWM00=65;PWM01=33;delay_ms(500);PWM02=31;			//下手--抓左圆环  PWM03=75  PWM02=35 PWM01=34
+	delay_ms(1000);
+	pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;		//放气孔闭合
+	pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+	delay_ms(1000);
+	PWM03=75+FT_03;PWM02=54;PWM00=64;PWM01=35;										//抬手
+	delay_ms(1000);
+	PWM03=75+FT_03;PWM00=55;PWM01=60;PWM02=52;										//抬手
+	delay_ms(1000);
+    
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grab_R_F(void)
+*功能说明: 圆环抓取 收集斗右前圆环
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grab_R_F(void)
+{
+//	    //手掌关节
+//    PWM00=45;//值越小越往前，越大越往后
+//    
+//    //手肘关节
+//	PWM01=40;//值越小越往下，越大越往上
+//    
+//    //大臂关节
+//	PWM02=74;//值越小越往前，越大越往后
+//    
+//    //水平旋转关节
+//	PWM03=75;//值越小越往右，越大越往左
+//	//PWM03=72;//值越小越往右，越大越往左
+//    //收集斗
+//	PWM04=84;//值越小越往下，越大越往上
+		
+    TIM_Cmd(TIM3, ENABLE);
+   // PWM00=45;PWM01=40;PWM02=70;PWM03=68;
+    PWM00=45;PWM01=40;PWM02=70;PWM03=68.6;
+    delay_ms(500);
+    PWM00=64;PWM01=42;PWM02=63;PWM03=68.6;
+    delay_ms(500);
+    PWM00=64;PWM01=42;PWM02=44;PWM03=68.6;
+    delay_ms(50);
+    PWM03=68.6+FT_03;PWM00=63.5;PWM01=42;delay_ms(500);PWM02=38;//下手--抓右前圆环
+   // PWM03=70+FT_03;PWM00=64;PWM01=42;delay_ms(500);PWM02=38;//下手--抓右前圆环
+	 
+	  delay_ms(1000);
+	  pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+	  pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+	  delay_ms(1000);
+	  PWM03=68.6+FT_03;PWM02=54;PWM00=54;PWM01=47;//抬手
+	  delay_ms(1000);
+	  PWM03=68.6+FT_03;PWM00=55;PWM01=60;PWM02=52;//抬手
+	  delay_ms(1000);
+    
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grab_R_B(void)
+*功能说明: 圆环抓取 收集斗右后圆环
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grab_R_B(void)
+{
+	
+//	    //手掌关节
+//  PWM00=45;//值越小越往后，越大越往前
+//    
+//    //手肘关节
+//	PWM01=40;//值越小越往下，越大越往上
+//    
+//    //大臂关节
+//	PWM02=74;//值越小越往前，越大越往后
+//    
+//    //水平旋转关节
+//	PWM03=75;//值越小越往右，越大越往左
+//	//PWM03=72;//值越小越往右，越大越往左
+//    //收集斗
+//	PWM04=84;//值越小越往下，越大越往上
+
+    TIM_Cmd(TIM3, ENABLE);
+    PWM03=67.8+FT_03;PWM00=68;PWM01=32;delay_ms(500);PWM02=38;//PWM03=67.8  PWM00=72.3 
+    delay_ms(1000);
+    PWM03=67.8+FT_03;PWM00=68;PWM01=32;delay_ms(500);PWM02=38;//下手--抓右后圆环//PWM03=67.8 PWM00=72.3 PWM02=30
+    delay_ms(500);
+    pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+    pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+    delay_ms(1000);
+    //PWM03=68+FT_03;PWM02=55;PWM00=70;PWM01=35;//抬手
+    PWM03=67.8+FT_03;PWM00=68.4;PWM01=32;PWM02=55;//抬手
+    delay_ms(1000);
+    PWM03=67.8+FT_03;PWM00=68.4;PWM01=45;PWM02=54;//抬手
+    delay_ms(1000);
+    
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_put_L_3(void)
+*功能说明: 圆环放置 左侧三倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_put_L_3(void)
+{
+    TIM_Cmd(TIM3, ENABLE);
+    
+    PWM03=94+FT_03;PWM00=56;PWM01=59;PWM02=65;
+    delay_ms(1000);
+    PWM03=94+FT_03;PWM00=54;PWM01=58;PWM02=54;		//转动
+    delay_ms(1000);
+    PWM03=94+FT_03;PWM00=53;PWM01=58;PWM02=44;	
+    delay_ms(1000);
+    PWM03=94+FT_03;PWM00=53;PWM01=58
+    ;PWM02=44;//转动
+	delay_ms(1000);
+	delay_ms(1000);
+    delay_ms(500);
+	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;	//放气孔打开
+	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;		//气泵关闭
+	delay_ms(2000);
+    PWM03=93+FT_03;PWM00=55;PWM01=50;PWM02=65;//手掌抖动
+    delay_ms(100);
+    PWM03=93+FT_03;PWM00=57;PWM01=51;PWM02=65;
+    delay_ms(100);
+    PWM03=93+FT_03;PWM00=55;PWM01=50;PWM02=65;
+    delay_ms(100);
+    PWM03=93+FT_03;PWM00=57;PWM01=51;PWM02=65;
+    delay_ms(100);    
+    PWM03=93+FT_03;PWM00=55;PWM01=51;PWM02=65;
+    delay_ms(500);
+    
+    TIM_Cmd(TIM3, DISABLE);
+    
+//    TIM_Cmd(TIM3, ENABLE);
+//    
+//    PWM03=94+FT_03;PWM00=58;PWM01=58;PWM02=53;										//转动
+//	delay_ms(1000);
+//    PWM03=94+FT_03;PWM00=57;PWM01=55;PWM02=47;										//转动
+//	delay_ms(1000);
+//	delay_ms(1000);
+//    delay_ms(500);
+//	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;	//放气孔打开
+//	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;		//气泵关闭
+//	delay_ms(2000);
+
+//    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_put_L_2(void)
+*功能说明: 圆环放置 左侧二倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_put_L_2(void)
+{
+    TIM_Cmd(TIM3, ENABLE);
+    
+    PWM03=93+FT_03;PWM00=57;PWM01=56;PWM02=50;//转动
+	delay_ms(1000);
+    PWM03=93+FT_03;PWM00=56;PWM01=55;PWM02=42;//转动
+	delay_ms(1000);
+	delay_ms(1000);
+    	delay_ms(500);
+	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+	delay_ms(2000);
+
+     TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_put_R_3(void)
+*功能说明: 圆环放置 右侧三倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_put_R_3(void)
+{
+    TIM_Cmd(TIM3, ENABLE);
+    
+    PWM03=49+FT_03;PWM00=56;PWM01=59;PWM02=65;
+    delay_ms(500);
+    PWM03=49+FT_03;PWM00=54;PWM01=56;PWM02=54;		//转动
+    delay_ms(500);
+    PWM03=49+FT_03;PWM00=54;PWM01=53;PWM02=49;	
+    delay_ms(500);
+    PWM03=49+FT_03;PWM00=54;PWM01=53;PWM02=48;//转动
+	delay_ms(1000);
+	delay_ms(1000);
+    delay_ms(500);
+	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;	//放气孔打开
+	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;		//气泵关闭
+	delay_ms(2000);
+    PWM03=48+FT_03;PWM00=55;PWM01=50;PWM02=65;//手掌抖动
+    delay_ms(100);
+    PWM03=48+FT_03;PWM00=57;PWM01=51;PWM02=65;
+    delay_ms(100);
+    PWM03=48+FT_03;PWM00=55;PWM01=50;PWM02=65;
+    delay_ms(100);
+    PWM03=48+FT_03;PWM00=57;PWM01=51;PWM02=65;
+    delay_ms(100);    
+    PWM03=48+FT_03;PWM00=55;PWM01=51;PWM02=65;
+    delay_ms(500);
+    
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_put_R_2(void)
+*功能说明: 圆环放置 右侧二倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_put_R_2(void)
+{
+    TIM_Cmd(TIM3, ENABLE);
+    
+    PWM03=49+FT_03;PWM00=57;PWM01=56;PWM02=50;//转动
+	delay_ms(1000);
+    PWM03=49+FT_03;PWM00=54;PWM01=55;PWM02=42;//转动
+	delay_ms(1000);
+	delay_ms(1000);
+    delay_ms(500);
+	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+	delay_ms(2000);
+
+     TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_back_to_mid(void)
+*功能说明: 放环后的抬手
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_back_to_mid(void)
+{
+    TIM_Cmd(TIM3, ENABLE);
+    
+  PWM00=PWM00;    //抬手
+	PWM01=PWM01-5;
+	PWM02=PWM02+25;
+	PWM03=PWM03;
+	delay_ms(500);
+    
+    //手掌关节
+    PWM00=45;//值越小越往前，越大越往后
+    //手肘关节
+	  PWM01=40;//值越小越往下，越大越往上
+    //大臂关节
+  	PWM02=74;//值越小越往前，越大越往后
+    //水平旋转关节
+	  //PWM03=78;//值越小越往右，越大越往左
+   	PWM03=70;//值越小越往右，越大越往左   71
+    //PWM03=71;PWM00=45;PWM01=40;PWM02=74;
+    delay_ms(1000);
+    
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_two(void)
+*功能说明: 圆环抓取 左侧第一个环子 放入左侧双倍区 右侧第一个环子 放入右侧三倍区 
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_two(void)
+{
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+	PWM03=74;PWM00=66;PWM01=34;delay_ms(500);PWM02=48;//下手--抓左圆环
+	delay_ms(1000);
+	//吸气
+	pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+	pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+	delay_ms(1000);
+	PWM03=74;PWM02=55;PWM00=65;PWM01=35;//抬手
+	delay_ms(1000);
+	PWM03=74;PWM00=55;PWM01=60;PWM02=52;//抬手
+	delay_ms(1000);
+	PWM03=94;PWM00=55;PWM01=57;PWM02=50;
+	delay_ms(1000);
+	PWM03=94;PWM00=57;PWM01=53;PWM02=44;//转动
+	delay_ms(1000);
+	delay_ms(1000);
+	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+	delay_ms(2000);
+	PWM03=69;PWM00=55;PWM01=55;PWM02=53;//左转
+	delay_ms(1000);
+    
+	PWM03=69;PWM00=66;PWM01=34;delay_ms(500);PWM02=48;//下手--抓右圆环
+	pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+	pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+	delay_ms(1000);
+	PWM03=69;PWM02=55;PWM00=65;PWM01=35;//抬手
+	delay_ms(1000);
+	PWM03=69;PWM00=68;PWM01=54;PWM02=55;//抬手
+	delay_ms(1000);
+	PWM03=50;PWM00=49;PWM01=58;PWM02=55;
+	delay_ms(1000);
+	PWM03=50;PWM00=56;PWM01=54;PWM02=49;
+	delay_ms(1000);
+	delay_ms(1000);
+	pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+	pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+	delay_ms(2000);
+	PWM03=50;PWM00=55;PWM01=55;PWM02=53;//左转
+	delay_ms(1000);
+	PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+	delay_ms(1000);
+	delay_ms(1000);
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_low_right(void)
+*功能说明: 圆环抓取 左侧两个圆环   放入右侧双倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_low_right(void)
+{
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+    PWM04=32;//收集装置放下//原来35
+    delay_ms(1000);
+	delay_ms(1000);
+    PWM03=73;PWM00=68;PWM01=33;delay_ms(500);PWM02=40;//下手--抓左圆环
+    delay_ms(1000);
+    pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+    pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+    delay_ms(1000);
+    PWM03=74;PWM02=55;PWM00=63;PWM01=35;//抬手
+    delay_ms(1000);
+		PWM03=74;PWM00=55;PWM01=60;PWM02=52;//抬手
+		delay_ms(1000);
+		PWM03=49;PWM00=55;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=49;PWM00=58;PWM01=52;PWM02=45;//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=49;PWM02=45;PWM00=46;delay_ms(1000);PWM01=52;PWM02=54;//左转
+		delay_ms(1000);
+		PWM03=74;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		
+		PWM03=72;PWM00=62;PWM01=43;delay_ms(500);PWM02=39;;//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=74;PWM02=55;PWM00=59;PWM01=43;//抬手
+		delay_ms(1000);
+		PWM03=74;PWM00=54;PWM01=60;PWM02=52;//抬手
+		delay_ms(1000);
+		PWM03=51;PWM00=56;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=51;PWM00=58;PWM01=52;PWM02=45;//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=51;PWM02=45;PWM00=41;delay_ms(1000);PWM01=52;PWM02=54;//左转
+		delay_ms(1000);
+		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+		delay_ms(1000);
+		delay_ms(1000);
+//	}
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_right(void)
+*功能说明: 圆环抓取 右侧两个圆环   放入右侧三倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_right(void)
+{
+  TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+  PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+	  PWM03=67;PWM00=68;PWM01=33;delay_ms(500);PWM02=40;//下手--抓右圆环
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=69;PWM02=55;PWM00=65;PWM01=35;//抬手
+		delay_ms(1000);
+		PWM03=69;PWM00=68;PWM01=54;PWM02=55;//抬手
+		delay_ms(1000);
+		PWM03=50;PWM00=49;PWM01=58;PWM02=55;
+		delay_ms(1000);
+		PWM03=50;PWM00=55;PWM01=54;PWM02=49;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=50;PWM00=53;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM03=70;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		
+		PWM03=68;PWM00=62;PWM01=43;delay_ms(500);PWM02=31;//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=69;PWM02=55;PWM00=60;PWM01=45;//抬手
+		delay_ms(1000);
+		PWM03=70;PWM00=55;PWM01=50;PWM02=53;//抬手
+		delay_ms(1000);
+		PWM03=50;PWM00=53;PWM01=58;PWM02=55;//转动
+		delay_ms(1000);
+		PWM03=50;PWM00=55;PWM01=54;PWM02=49;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=50;PWM00=49;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+		delay_ms(1000);
+		delay_ms(1000);
+//	}
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_low_1(void)
+*功能说明: 圆环抓取 左侧第一个圆环 放入左侧双倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_low_1(void)
+{
+  TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+  PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+//	while(1)
+//	{
+		PWM03=74;PWM00=68;PWM01=33;delay_ms(500);PWM02=42;			//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;		//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=74;PWM02=54;PWM00=65;PWM01=35;										//抬手
+		delay_ms(1000);
+		PWM03=74;PWM00=55;PWM01=60;PWM02=52;										//抬手
+		delay_ms(1000);
+		PWM03=94;PWM00=53;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=94;PWM00=58;PWM01=53;PWM02=44;										//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;	//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;		//气泵关闭
+		delay_ms(2000);
+		
+		PWM03=74;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+		delay_ms(1000);
+		delay_ms(1000);
+//	}
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_low(void)
+*功能说明: 圆环抓取 左侧两个圆环   放入左侧双倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_low(void)
+{
+  TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+  PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+
+/*	  PWM03=74;PWM00=68;PWM01=33;delay_ms(500);PWM02=42;			//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;		//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=74;PWM02=54;PWM00=64;PWM01=35;										//抬手
+		delay_ms(1000);
+		PWM03=74;PWM00=55;PWM01=60;PWM02=52;										//抬手
+		delay_ms(1000);
+		PWM03=94;PWM00=53;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=94;PWM00=58;PWM01=53;PWM02=44;										//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;	//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;		//气泵关闭
+		delay_ms(2000);
+		PWM03=73;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM03=73;PWM00=62;PWM01=43;delay_ms(500);PWM02=41;
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=73;PWM02=54;PWM00=54;PWM01=47;//抬手
+		delay_ms(1000);
+		PWM03=73;PWM00=55;PWM01=60;PWM02=52;//抬手
+		delay_ms(1000);
+		PWM03=94;PWM00=56;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=94;PWM00=58;PWM01=52;PWM02=44;//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=73;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+		delay_ms(1000);
+		delay_ms(1000);
+        */
+        
+        PWM03=73;PWM00=68;PWM01=33;delay_ms(500);PWM02=40;			//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;		//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=73;PWM02=54;PWM00=64;PWM01=35;										//抬手
+		delay_ms(1000);
+		PWM03=73;PWM00=55;PWM01=60;PWM02=52;										//抬手
+		delay_ms(1000);
+		PWM03=92;PWM00=53;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=92;PWM00=58;PWM01=53;PWM02=44;										//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;	//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;		//气泵关闭
+		delay_ms(2000);
+		PWM03=75;PWM00=55;PWM01=55;PWM02=53;//右转
+		delay_ms(1000);
+		
+		PWM03=72;PWM00=62;PWM01=43;delay_ms(500);PWM02=39;
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=72;PWM02=54;PWM00=54;PWM01=47;//抬手
+		delay_ms(1000);
+		PWM03=72;PWM00=55;PWM01=60;PWM02=52;//抬手
+		delay_ms(1000);
+		PWM03=93;PWM00=56;PWM01=57;PWM02=50;
+		delay_ms(1000);
+		PWM03=93;PWM00=58;PWM01=52;PWM02=44;//转动
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=75;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		//PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+        Steering_init();
+		delay_ms(1000);
+		delay_ms(1000);
+//	}
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing(void)
+*功能说明: 圆环抓取 右侧两个圆环   放入左侧三倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing(void)
+{
+  TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+  PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+	
+//	  PWM03=69;PWM00=66;PWM01=34;delay_ms(500);PWM02=48;//下手--抓右圆环
+//		delay_ms(1000);
+//		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+//		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+//		delay_ms(1000);
+//		PWM03=69;PWM02=54;PWM00=64;PWM01=35;//抬手
+//		delay_ms(1000);
+//		PWM03=69;PWM00=68;PWM01=54;PWM02=55;//抬手
+//		delay_ms(1000);
+//		PWM03=95;PWM00=49;PWM01=58;PWM02=55;
+//		delay_ms(1000);
+//		PWM03=95;PWM00=56;PWM01=54;PWM02=50;
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+//		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		PWM03=69;PWM00=55;PWM01=55;PWM02=53;//左转
+//		delay_ms(1000);
+//		PWM03=69;PWM00=60;PWM01=44;delay_ms(500);PWM02=41;//下手--抓左圆环
+//		delay_ms(1000);
+//		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+//		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+//		delay_ms(1000);
+//		PWM03=69;PWM02=58;PWM00=56;PWM01=43;//抬手
+//		delay_ms(1000);
+//		PWM03=69;PWM00=55;PWM01=50;PWM02=53;//抬手
+//		delay_ms(1500);
+//		PWM03=94;PWM00=53;PWM01=58;PWM02=55;//转动
+//		delay_ms(1500);
+//		PWM03=94;PWM00=54;PWM01=55;PWM02=49;
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+//		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		PWM03=69;PWM00=55;PWM01=55;PWM02=53;//左转
+//		delay_ms(1000);
+//		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+//		delay_ms(1000);
+//		delay_ms(1000);
+//	}
+
+		PWM03=67;PWM00=68;PWM01=33;delay_ms(500);PWM02=40;//下手--抓右后圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=68;PWM02=55;PWM00=63;PWM01=35;//抬手
+		delay_ms(1000);
+		PWM03=68;PWM00=68;PWM01=54;PWM02=54;//抬手
+		delay_ms(1000);
+		PWM03=92;PWM00=49;PWM01=58;PWM02=54;
+		delay_ms(1000);
+		PWM03=92;PWM00=55;PWM01=55;PWM02=47;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+        
+		PWM03=68;PWM00=56;PWM01=55;PWM02=52;//左转
+		delay_ms(1000);
+        
+		PWM03=68;PWM00=62;PWM01=43;delay_ms(500);PWM02=31;//下手--抓右前圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=68;PWM02=59;PWM00=60;PWM01=41;//抬手
+		delay_ms(1000);
+		PWM03=68;PWM00=55;PWM01=50;PWM02=53;//抬手
+		delay_ms(1000);
+		PWM03=92;PWM00=53;PWM01=58;PWM02=55;//转动
+		delay_ms(1500);
+		PWM03=92;PWM00=53;PWM01=58;PWM02=46;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+        
+		PWM03=75;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+        
+    Steering_init();//复位
+		delay_ms(1000);
+		delay_ms(1000);
+		
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_2(void)
+*功能说明: 圆环抓取 右侧两个圆环   放入左侧三倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_2(void)
+{
+  TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+  PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+	
+//	  PWM03=69;PWM00=66;PWM01=34;delay_ms(500);PWM02=48;//下手--抓右圆环
+//		delay_ms(1000);
+//		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+//		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+//		delay_ms(1000);
+//		PWM03=69;PWM02=54;PWM00=64;PWM01=35;//抬手
+//		delay_ms(1000);
+//		PWM03=69;PWM00=68;PWM01=54;PWM02=55;//抬手
+//		delay_ms(1000);
+//		PWM03=95;PWM00=49;PWM01=58;PWM02=55;
+//		delay_ms(1000);
+//		PWM03=95;PWM00=56;PWM01=54;PWM02=50;
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+//		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		PWM03=69;PWM00=55;PWM01=55;PWM02=53;//左转
+//		delay_ms(1000);
+//		PWM03=69;PWM00=60;PWM01=44;delay_ms(500);PWM02=41;//下手--抓左圆环
+//		delay_ms(1000);
+//		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+//		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+//		delay_ms(1000);
+//		PWM03=69;PWM02=58;PWM00=56;PWM01=43;//抬手
+//		delay_ms(1000);
+//		PWM03=69;PWM00=55;PWM01=50;PWM02=53;//抬手
+//		delay_ms(1500);
+//		PWM03=94;PWM00=53;PWM01=58;PWM02=55;//转动
+//		delay_ms(1500);
+//		PWM03=94;PWM00=54;PWM01=55;PWM02=49;
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+//		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		PWM03=69;PWM00=55;PWM01=55;PWM02=53;//左转
+//		delay_ms(1000);
+//		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+//		delay_ms(1000);
+//		delay_ms(1000);
+//	}
+
+		PWM03=68;PWM00=69;PWM01=32;delay_ms(500);PWM02=44;//下手--抓右圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=68;PWM02=55;PWM00=63;PWM01=35;//抬手
+		delay_ms(1000);
+		PWM03=68;PWM00=68;PWM01=54;PWM02=55;//抬手
+		delay_ms(1000);
+		PWM03=93;PWM00=49;PWM01=58;PWM02=55;
+		delay_ms(1000);
+		PWM03=93;PWM00=55;PWM01=55;PWM02=48;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+		PWM03=69;PWM00=56;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM03=69;PWM00=61;PWM01=43;delay_ms(500);PWM02=40;//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=69;PWM02=59;PWM00=56;PWM01=43;//抬手
+		delay_ms(1000);
+		PWM03=69;PWM00=55;PWM01=50;PWM02=53;//抬手
+		delay_ms(1000);
+		PWM03=94;PWM00=53;PWM01=58;PWM02=55;//转动
+		delay_ms(1500);
+		PWM03=94;PWM00=51;PWM01=58;PWM02=46;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+		PWM03=75;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+		delay_ms(1000);
+		delay_ms(1000);
+		
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设     
+}
+
+/**********************************************************************************************************
+*函 数 名: void Circle_grabbing_4(void)
+*功能说明: 圆环抓取 四个圆环   放入左侧三倍区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void Circle_grabbing_4(void)
+{
+  TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+  PWM04=32;//收集装置放下//原来35
+	delay_ms(1000);
+	delay_ms(1000);
+
+ PWM03=69;PWM00=67;PWM01=34;delay_ms(500);PWM02=47;//下手--抓右圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=69;PWM02=55;PWM00=63;PWM01=35;//抬手
+		delay_ms(1000);
+		PWM03=69;PWM00=68;PWM01=54;PWM02=55;//抬手
+		delay_ms(1000);
+		PWM03=95;PWM00=49;PWM01=58;PWM02=55;
+		delay_ms(1000);
+		PWM03=95;PWM00=55;PWM01=54;PWM02=49;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+		PWM03=70;PWM00=56;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM03=70;PWM00=61;PWM01=44;delay_ms(500);PWM02=41;//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=70;PWM02=59;PWM00=56;PWM01=43;//抬手
+		delay_ms(1000);
+		PWM03=70;PWM00=55;PWM01=50;PWM02=53;//抬手
+		delay_ms(1000);
+		PWM03=96;PWM00=53;PWM01=58;PWM02=55;//转动
+		delay_ms(1500);
+		PWM03=96;PWM00=52;PWM01=57;PWM02=47;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+		PWM03=75;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+//抓左侧两个圆环		
+		PWM03=75;PWM00=68;PWM01=34;delay_ms(500);PWM02=47;			//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;		//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=75;PWM02=55;PWM00=65;PWM01=35;										//抬手
+		delay_ms(1000);
+		PWM03=74;PWM00=55;PWM01=60;PWM02=52;										//抬手
+		delay_ms(1000);
+		delay_ms(1000);
+		PWM03=96;PWM00=49;PWM01=58;PWM02=55;
+		delay_ms(1000);
+		PWM03=96;PWM00=56;PWM01=55;PWM02=49;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=125;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(2000);
+		PWM03=74;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM03=74;PWM00=62;PWM01=43;delay_ms(500);PWM02=41;//下手--抓左圆环
+		delay_ms(1000);
+		pwm[1][4]=25;pwm[1][5]=25;pwm[1][6]=25;pwm[1][7]=25;//放气孔闭合
+		pwm[1][0]=125;pwm[1][1]=125;pwm[1][2]=125;pwm[1][3]=125;//气泵工作
+		delay_ms(1000);
+		PWM03=74;PWM02=54;PWM00=54;PWM01=47;//抬手
+		delay_ms(1000);
+		PWM03=74;PWM00=55;PWM01=60;PWM02=52;//抬手
+		delay_ms(1200);
+		PWM03=96;PWM00=53;PWM01=58;PWM02=55;//转动
+		delay_ms(1000);
+		PWM03=96;PWM00=54;PWM01=56;PWM02=47;
+		delay_ms(1000);
+		delay_ms(1000);
+		pwm[1][4]=125;pwm[1][5]=125;pwm[1][6]=125;pwm[1][7]=25;//放气孔打开
+		pwm[1][0]=25;pwm[1][1]=25;pwm[1][2]=25;pwm[1][3]=25;//气泵关闭
+		delay_ms(1000);
+		delay_ms(1000);
+		PWM03=70;PWM00=55;PWM01=55;PWM02=53;//左转
+		delay_ms(1000);
+		PWM00=45;PWM01=41;PWM02=75;PWM03=70;//复位
+		delay_ms(1000);
+		delay_ms(1000);
+//	}
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设   
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN16(void)
+*功能说明: 规划路线1，排名赛
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN16(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route04=8;
+	int xloca04[8]={0,2,2,1,1,2,2,3}; 
+	int yloca04[8]={2,2,3,3,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	pwm[0][4]=32;
+    delay_ms (400); 
+	//delay_ms(1000);	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	GO_Grid(2);
+	GO_Brake();
+	
+	for(i=1;i<Route04;i++)
+	{
+		difx=xloca04[i]-xloca04[i-1];
+		dify=yloca04[i]-yloca04[i-1];  
+		select_mode(difx,dify); 
+	}
+	  GO_Brake();
+	left_speed=40;right_speed=40;
+	GO_Stright();
+	delay_ms(1000);
+//		Circle_grabbing_2();
+//		Circle_grabbing_low_right();
+		
+//		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+//		PWM04=85;
+//		delay_ms(1200);	
+//		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+//		GO_Draw_Back();
+//		delay_ms(1000);
+//		delay_ms(500);	
+//		GO_Left();
+//		
+//		GO_Grid(4);
+//		GO_Brake();
+//		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+//		PWM04=32;	
+//		delay_ms(1200);	
+//		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN00(void)
+*功能说明: 规划路线1，排名赛
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN00(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route00=10;
+	int xloca00[10]={0,0,2,2,2,2,2,-2,-2,3}; 
+	int yloca00[10]={2,8,8,7,5,3,2, 2, 4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();//先直行离开启动区	
+	delay_ms(400);	
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 ，舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route00;i++)
+	{
+		if(xloca00[i-1]==2&&yloca00[i-1]==7)
+		{
+			GO_Brake();
+			Circle_grabbing_low_1();		
+			GO_Stright();
+			delay_ms(30);
+		}
+		else if(xloca00[i-1]==2&&yloca00[i-1]==5)
+		{
+			GO_Brake();
+			Circle_grabbing();
+			GO_Stright();
+			delay_ms(30);
+		}
+		else if(xloca00[i-1]==2&&yloca00[i-1]==3)
+		{
+			GO_Brake();
+			Circle_grabbing_low();
+			GO_Stright();
+			delay_ms(30);
+		}
+		difx=xloca00[i]-xloca00[i-1];
+		dify=yloca00[i]-yloca00[i-1];  
+		select_mode(difx,dify); 	
+	}
+    GO_Brake();
+	Circle_grabbing_2();
+	Circle_grabbing_low_right();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN02(void)
+*功能说明: 规划路线2，抓取4、1、2、5，第一个标准区，放左右两边，停到对方三倍区外
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN01(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route01=7;
+	int xloca01[7]={0,0,-1,-1,2,2,3}; 
+	int yloca01[7]={2,3, 3, 2,2,4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route01;i++)
+	{
+
+		difx=xloca01[i]-xloca01[i-1];
+		dify=yloca01[i]-yloca01[i-1];  
+		select_mode(difx,dify); 
+	}
+			
+		GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+	GO_Back ();
+	GO_Grid (4);
+	GO_Right();
+	GO_Grid(1);
+
+		GO_Brake ();
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN02(void)
+*功能说明: 规划路线3，抓取4、1、2、5，第一个标准区，放左右两边，停到自己三倍区外
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN02(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route02=7;
+	int xloca02[7]={0,0,-1,-1,2,2,3}; 
+	int yloca02[7]={2,3, 3, 2,2,4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route02;i++)
+	{
+
+		difx=xloca02[i]-xloca02[i-1];
+		dify=yloca02[i]-yloca02[i-1];  
+		select_mode(difx,dify); 
+	}
+		
+		GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+	    GO_Left ();
+		GO_Grid(1);
+	    GO_Brake ();
+	//添加搭机械臂
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM03=70;delay_ms(200);PWM00=55;PWM01=55;PWM02=48;
+	delay_ms(1000);
+	PWM03=94;delay_ms(200);PWM00=55;PWM01=55;PWM02=48;
+	delay_ms(500);
+	TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN03(void)
+*功能说明: 规划路线4，收集4、1、2、5，放标准区，左右两边掏，停自己标准区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN03(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route03=7;
+	int xloca03[7]={0,0,-1,-1,2,2,3}; 
+	int yloca03[7]={2,3, 3, 2,2,4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route03;i++)
+	{
+
+		difx=xloca03[i]-xloca03[i-1];
+		dify=yloca03[i]-yloca03[i-1];  
+		select_mode(difx,dify); 
+	}
+			
+		GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设,舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();
+
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+		GO_Stright();
+		delay_ms(30);
+		GO_Grid(5);
+		
+		GO_Stright();
+		delay_ms(100);
+		GO_Brake();
+		delay_ms(500);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();			
+		GO_Grid(5);
+		GO_Brake();
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN04(void)
+*功能说明: 规划路线5 抓1、3、4、2，两边掏，停标准区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN04(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route04=8;
+	int xloca04[8]={0,-2,-2,1,1,2,2,3}; 
+	int yloca04[8]={2, 2, 3,3,2,2,4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route04;i++)
+	{
+		difx=xloca04[i]-xloca04[i-1];
+		dify=yloca04[i]-yloca04[i-1];  
+		select_mode(difx,dify); 
+	}
+	  GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+		
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();
+
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+		GO_Stright();
+		delay_ms(30);
+		GO_Grid(5);
+		
+		GO_Stright();
+		delay_ms(100);
+		GO_Brake();
+		delay_ms(500);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();			
+		GO_Grid(5);
+		GO_Brake();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN05(void)
+*功能说明: 规划路线6，收集4、1、2、5，两边掏，再掏停到别人标准区外
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN05(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route11=7;
+	int xloca11[7]={0,0,-1,-1,2,2,3}; 
+	int yloca11[7]={2,3, 3, 2,2,4,4};
+	int Route122=4;
+	int xloca122[4]={0,0,2,2}; 
+	int yloca122[4]={0,2,2,5};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route11;i++)
+	{
+
+		difx=xloca11[i]-xloca11[i-1];
+		dify=yloca11[i]-yloca11[i-1];  
+		select_mode(difx,dify); 
+	}
+			
+		GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();
+
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+		GO_Stright();
+		delay_ms(100);
+		GO_Grid(5);
+		
+		GO_Stright();
+		delay_ms(200);
+		GO_Brake();
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(700);	
+		GO_Back();			
+		GO_Grid(5);
+		GO_Brake();
+
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(100);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();	
+		
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(100);
+		mode=1;
+	for(i=1;i<Route122;i++)
+	{
+
+		difx=xloca122[i]-xloca122[i-1];
+		dify=yloca122[i]-yloca122[i-1];  
+		select_mode(difx,dify); 
+	}
+		GO_Stright();
+		delay_ms(200);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+	
+	    GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Brake();
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN06(void)
+*功能说明: 规划路线7，收集1、3、4、2，两边掏，再掏停别人标准区外
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN06(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route06=8;
+	int xloca06[8]={0,-2,-2,1,1,2,2,3}; 
+	int yloca06[8]={2, 2, 3,3,2,2,4,4};
+	int Route061=4;
+	int xloca061[4]={0,0,2,2}; 
+	int yloca061[4]={0,2,2,5};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route06;i++)
+	{
+
+		difx=xloca06[i]-xloca06[i-1];
+		dify=yloca06[i]-yloca06[i-1];  
+		select_mode(difx,dify); 
+	}
+			
+		GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();
+
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+		GO_Stright();
+		delay_ms(100);
+		GO_Grid(5);
+		
+		GO_Stright();
+		delay_ms(200);
+		GO_Brake();
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(700);	
+		GO_Back();			
+		GO_Grid(5);
+		GO_Brake();
+
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(100);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();	
+		
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(100);
+		mode=1;
+	for(i=1;i<Route061;i++)
+	{
+
+		difx=xloca061[i]-xloca061[i-1];
+		dify=yloca061[i]-yloca061[i-1];  
+		select_mode(difx,dify); 
+	}
+		GO_Stright();
+		delay_ms(200);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(600);	
+	
+	    GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Brake();
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN07(void)
+*功能说明: 规划路线8，收集4、6、11、10、8，停到第一个标准区，两边掏，停自己标准区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN07(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route07=9;
+	int xloca07[9]={0,0,1,1,-1,-1,0,0,3}; 
+	int yloca07[9]={2,6,6,8, 8, 7,7,4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=24.8,right_speed=28;//直行最佳速度
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route07;i++)   //跑路收集程序
+	{
+		difx=xloca07[i]-xloca07[i-1];
+		dify=yloca07[i]-yloca07[i-1];  
+		select_mode(difx,dify); 
+	}
+	    GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+
+		//TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(1000);	
+		GO_Back();
+
+		GO_Brake();
+		//TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+		GO_Stright();
+		delay_ms(30);
+		GO_Grid(5);
+		
+		GO_Stright();
+		delay_ms(100);
+		GO_Brake();
+		delay_ms(500);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(1000);	
+		GO_Back();			
+		GO_Grid(5);
+		GO_Brake();
+
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN08(void)
+*功能说明: 规划路线5 抓4、6、11、10、8，两边掏，停到自己第二个标准区
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN08(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route08=9;
+	int xloca08[9]={0,0,1,1,-1,-1,0,0,3}; 
+	int yloca08[9]={2,6,6,8, 8, 7,7,6,6};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route08;i++)
+	{
+		difx=xloca08[i]-xloca08[i-1];
+		dify=yloca08[i]-yloca08[i-1];  
+		select_mode(difx,dify); 
+	}
+	    GO_Brake();
+	    Circle_grabbing_right();
+	    Circle_grabbing_low();
+
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=85;
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设	
+		GO_Stright();
+		delay_ms(30);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();
+
+		GO_Brake();
+		TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+		PWM04=32;	
+		delay_ms(1200);	
+		TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设			
+		GO_Stright();
+		delay_ms(30);
+		GO_Grid(5);
+		
+		GO_Stright();
+		delay_ms(100);
+		GO_Brake();
+		delay_ms(500);
+		GO_Draw_Back();
+		delay_ms(1000);
+		delay_ms(500);	
+		GO_Back();			
+		GO_Grid(5);
+		GO_Brake();
+
+
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN09(void)
+*功能说明: 规划路线3，抓取4、1、2、5，第一个标准区，放左右两边，停到自己三倍区外
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN09(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route09=7;
+	int xloca09[7]={0,0,-1,-1,2,2,3}; 
+	int yloca09[7]={2,3, 3, 2,2,4,4};
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	delay_ms (400);
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);	
+	left_speed=25,right_speed=25;
+    GO_Stright();	
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route09;i++)
+	{
+
+		difx=xloca09[i]-xloca09[i-1];
+		dify=yloca09[i]-yloca09[i-1];  
+		select_mode(difx,dify); 
+	}
+		
+		GO_Brake();
+		Circle_grabbing_2();
+		Circle_grabbing_low_right();
+
+	//添加搭机械臂
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM03=70;delay_ms(200);PWM00=55;PWM01=55;PWM02=48;
+	delay_ms(1000);
+	PWM03=94;delay_ms(200);PWM00=55;PWM01=55;PWM02=48;
+	delay_ms(500);
+	TIM_Cmd(TIM3, DISABLE);
+}
+
+void FUN10()
+{
+    u8 i;
+	int difx=0,dify=0;
+	int Route=6;
+	int xloca[6]={0,0,2,2,2,2}; 
+	int yloca[6]={0,8,8,7,5,3};
+    
+    GO_Stright();
+    delay_ms(200);
+    GO_Brake();
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+    
+    for(i=1;i<Route;i++)
+	{
+        if(xloca[i-1] == 2 && yloca[i-1] == 7)
+        {
+            GO_Brake();
+            Circle_grab_L_F();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_L_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        if(xloca[i-1] == 2 && yloca[i-1] == 5)
+        {
+            GO_Brake();
+            Circle_grab_R_F();
+            Circle_put_L_3();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_R_B();
+            Circle_put_L_3();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        
+		difx=xloca[i]-xloca[i-1];
+		dify=yloca[i]-yloca[i-1];  
+		select_mode(difx,dify); 
+	}
+    GO_Brake();
+    
+    // (2,3)
+    Circle_grab_L_B();
+    Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+            
+    Circle_grab_R_B();
+    Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04 = 85;//收集装置
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+
+void FUN11()
+{
+}
+
+void FUN12()
+{
+}
+
+void FUN13()
+{
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=33;//收集装置放下,原36
+	delay_ms(1200);		
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+    
+    Circle_grab_R_F();
+    Circle_put_R_3();
+    //Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+    
+    Circle_grab_R_B();
+    Circle_put_R_3();
+    //Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+}
+
+void FUN14()
+{
+    u8 i;
+	int difx=0,dify=0;
+	int Route=6;
+	int xloca[6]={0,0,2,2,2,2}; 
+	int yloca[6]={0,8,8,7,5,3};
+    
+    GO_Stright();
+    delay_ms(200);
+    GO_Brake();
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+    
+    for(i=1;i<Route;i++)
+	{
+        if(xloca[i-1] == 2 && yloca[i-1] == 7)
+        {
+            GO_Brake();
+            Circle_grab_L_F();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_L_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        if(xloca[i-1] == 2 && yloca[i-1] == 5)
+        {
+            GO_Brake();
+            Circle_grab_R_F();
+            Circle_put_L_3();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_R_B();
+            Circle_put_L_3();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        
+		difx=xloca[i]-xloca[i-1];
+		dify=yloca[i]-yloca[i-1];  
+		select_mode(difx,dify); 
+	}
+    GO_Brake();
+    
+    // (2,3)
+    Circle_grab_L_B();
+    Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+            
+    Circle_grab_R_B();
+    Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04 = 85;//收集装置
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN00_T(void)
+*功能说明: 灰度传感器测试
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN00_T(void)
+{
+	  u8 i;
+	  char p[20];
+	  while(1){
+			Filter();
+			for(i=0;i<8;i++)
+			{
+				sprintf(p,"%1d%s%-5d%s%2d%s%-5d",i,":",After_filter[i],"|",i+8,":",After_filter[i+8]); 
+				//sprintf(p,"%1d%s%-5d%s%2d%s%-5d",i,":",Sensor_State[i],"|",i+8,":",Sensor_State[i+8]); 
+				myprintf_str(0,i,p);
+			}	
+	  }
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN01_T(void)
+*功能说明: 灰度传感器测试
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN01_T(void)
+{
+//		left_speed=36,right_speed=38;//2022.6.28 L:24.8 R=28
+//    GO_Stright();//2023.2.24添加下面全部
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		delay_ms(1000);
+//		delay_ms(1000);
+
+//		GO_Brake();
+
+	  u8 i;
+	  char p[20];
+	  while(1){
+			Filter();
+			for(i=0;i<8;i++)
+			{
+						//sprintf(p,"%1d%s%-5d%s%2d%s%-5d",i,":",After_filter[i],"|",i+8,":",After_filter[i+8]); 
+							sprintf(p,"%1d%s%-5d%s%2d%s%-5d",i,":",Sensor_State[i],"|",i+8,":",Sensor_State[i+8]); 
+				myprintf_str(0,i,p);
+			}	
+	  }
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN02_T(void)
+*功能说明: 电机直走
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN02_T(void)
+{
+	//left_speed=36,right_speed=36; // 2023.2.25 L:36 R:36
+		left_speed = 24.8, right_speed = 28; //2022.6.28 L:24.8 R=28
+    GO_Stright();//2023.2.24添加下面全部
+		delay_ms(1000);
+		delay_ms(1000);
+		delay_ms(1000);
+		delay_ms(1000);
+		delay_ms(1000);
+		delay_ms(1000);
+	GO_Brake();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN03_T(void)
+*功能说明: 电机右转
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN03_T(void)
+{	
+		
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	delay_ms(500);
+	PWM04=34;//收集装置放下,原36
+	delay_ms(1000);
+	GO_Grid (4);
+	GO_Brake ();
+  GO_Right();
+	GO_Grid (4);
+	GO_Brake ();
+
+	delay_ms(1000);
+	delay_ms(1000);
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN04_T(void)
+*功能说明: 电机左转
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN04_T(void)
+{
+		
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	delay_ms(500);
+	PWM04=34;//收集装置放下,原36
+	delay_ms(1000);
+  GO_Grid (4);
+	GO_Brake();
+  GO_Left();
+	GO_Grid(4);
+	GO_Brake ();
+	
+	delay_ms(1000);
+	delay_ms(1000);
+
+//	delay_ms(1000);
+//		GO_Grid (3);
+//	 GO_Brake ();
+
+//    GO_Left();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN05_T(void)
+*功能说明: 小车矫正直行
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN05_T(void)
+{
+	TIM_Cmd(TIM3, ENABLE);          //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=33;               //收集装置放下,原36
+	delay_ms(1200);		
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设
+//GO_Grid(0);           //直行测试
+	
+//	left_speed  = 25.5;
+//	right_speed = 27.8;
+  left_speed=M_L_SPEED;right_speed=M_R_SPEED;//R速度原本为28，转弯不到位
+  MOTOR_L_IN1(1);MOTOR_L_IN2(0);TIM_SetCompare1(TIM1,100*left_speed);  
+  MOTOR_R_IN3(0);MOTOR_R_IN4(1);TIM_SetCompare2(TIM1,100*right_speed); 
+//	
+//  GO_Grid(4);//20230301之前测试走格子
+//	GO_Left();
+//  GO_Grid(3);//20230301之前测试走格子
+//	GO_Brake();
+	
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN06(void)
+*功能说明: 规划路线2，口字型左转4格，循环3圈
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN06_T(void)
+{
+	u8 i;
+	int difx=0,dify=0,n;
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	
+	GO_Stright();
+	PWM04=30;//收集装置放下,原36
+	delay_ms(200);
+	PWM04=30;//收集装置放下,原36
+	delay_ms(800);
+	
+	left_speed=M_L_SPEED;right_speed=M_R_SPEED;//2022.6.28 L:24.8 R=28
+  //for(n=0;n<3;n++){
+	  for(i=1;i<Route_LEN5;i++)
+	  {
+			difx=xloca5[i]-xloca5[i-1];
+			dify=yloca5[i]-yloca5[i-1];  
+			select_mode(difx,dify);   
+	   }
+  //GO_Left();
+
+	mode=1;
+  GO_Brake();
+		 
+ //}
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN07_T(void)
+*功能说明: 规划路线3，口字型右转4格，循环3圈
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN07_T(void)
+{
+	u8 i;
+	int difx=0,dify=0,n;
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=36;//收集装置放下,原36
+	delay_ms(1000);
+    for(n=0;n<3;n++){
+	  for(i=1;i<Route_LEN3;i++)
+	  {
+		difx=xloca3[i]-xloca3[i-1];
+		dify=yloca3[i]-yloca3[i-1];  
+		select_mode(difx,dify);   
+	   }
+	GO_Right();
+	delay_ms(100);
+	mode=1;
+    GO_Brake();
+}
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN08_T(void)
+*功能说明: 规划路线3，日字型
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN08_T(void)
+{
+	u8 i;
+	int difx=0,dify=0;
+	int Route08=9;
+	int xloca08[9]={0,-2,-2,0,0,-2,-2,2,2}; 
+	int yloca08[9]={2,2, 4, 4,6,6,8,8,2};
+	GO_Grid(2);
+	GO_Brake();
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+	delay_ms(1200);		
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+	for(i=1;i<Route08;i++)
+	{  
+
+		difx=xloca08[i]-xloca08[i-1];
+		dify=yloca08[i]-yloca08[i-1];  
+		select_mode(difx,dify); 
+	}
+		
+	mode=1;
+    GO_Brake();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN15(void)
+*功能说明: 圆环抓取测试
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN15_T(void)
+{
+	
+	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=33;//收集装置放下,原36
+	delay_ms(1200);		
+	TIM_Cmd(TIM3, DISABLE);  //使能TIMx外设
+    
+	//Circle_grab_R_F();//*
+	//Circle_grab_R_B();
+	//Circle_put_L_3();
+	//Circle_put_L_2();
+    //delay_ms(1000);
+   // Circle_back_to_mid();
+//    delay_ms(500);
+//    
+ //     Circle_grab_R_B();//*
+//    //Circle_put_L_3();
+//    Circle_put_L_2();
+//    delay_ms(1000);
+//    Circle_back_to_mid();
+//    delay_ms(500);
+    
+      //Circle_grab_L_F();  //*
+//    //Circle_put_R_3();
+//    Circle_put_R_3();
+//    delay_ms(1000);
+//    Circle_back_to_mid();
+//    delay_ms(500);
+//    
+       Circle_grab_L_B();
+//    //Circle_put_R_3();
+//    Circle_put_R_3();
+//    delay_ms(1000);
+//    Circle_back_to_mid();
+//    delay_ms(500);
+//    
+//    TIM_Cmd(TIM3, ENABLE);
+//    //收集斗
+//	PWM04=84;//值越小越往下，越大越往上
+//    delay_ms(1200);		
+	TIM_Cmd(TIM3, DISABLE);
+    
+    while(1)
+    {
+    }
+    
+//	GO_Right();
+//	GO_Grid(1);
+//	GO_Left();
+
+//	GO_Grid(1);
+//	GO_Brake();
+    
+//    while(1)
+//    {
+//        Circle_grab_L_F();
+//        //Circle_put_L_3();
+//        Circle_put_L_2();
+//        delay_ms(1000);
+//        Circle_back_to_mid();
+//        delay_ms(500);
+//        
+//        Circle_grab_L_B();
+//        Circle_put_L_3();
+//        //Circle_put_L_2();
+//        delay_ms(1000);
+//        Circle_back_to_mid();
+//        delay_ms(500);
+//        
+//        Circle_grab_R_F();
+//        Circle_put_R_2();
+//        //Circle_put_R_3();
+//        delay_ms(1000);
+//        Circle_back_to_mid();
+//        delay_ms(500);
+//        
+//        Circle_grab_R_B();
+//        Circle_put_R_2();
+//        //Circle_put_R_3();
+//        delay_ms(1000);
+//        Circle_back_to_mid();
+//        delay_ms(500);
+//    }
+    
+//	while(1)
+//	{   
+        //Steering_init();
+		
+        //Circle_grabbing();           //1圆环抓取 右侧两个圆环   放入左侧三倍区 复位的 - OK
+		
+        //Circle_grabbing_2();         //圆环抓取 右侧两个圆环   放入左侧三倍区  无复位
+		
+       // Circle_grabbing_low();       //圆环抓取 左侧两个圆环   放入左侧双倍区 - OK
+        
+		   // Circle_grabbing_low_1();     //圆环抓取 左侧第一个圆环 放入左侧双倍区
+		
+        //  Circle_grabbing_right();     //圆环抓取 右侧两个圆环   放入右侧三倍区 - OK
+		
+        // Circle_grabbing_low_right(); //圆环抓取 左侧两个圆环   放入右侧双倍区  - OK
+        
+		   // Circle_grabbing_two();       //圆环抓取 左侧第一个环子 放入左侧双倍区 右侧第一个环子 放入右侧三倍区 
+		
+        // Circle_grabbing_4();         //圆环抓取 四个圆环   放入左侧三倍区
+//	}
+//	GO_Draw_Back();
+//	
+//	TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+//	PWM03=70;delay_ms(200);PWM00=55;PWM01=55;PWM02=48;
+//	delay_ms(1000);
+//	PWM03=94;delay_ms(200);PWM00=55;PWM01=55;PWM02=48;
+//	delay_ms(500);
+//	PWM04=32;delay_ms(1500);
+//	TIM_Cmd(TIM3, DISABLE); 
+//	GO_Back();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN00_R(void)
+*功能说明: 大车路径 00
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN00_R()
+{
+    FUN00_T();
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN01_R(void)
+*功能说明: 大车路径 01
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN01_R()
+{
+    u8 i, j;
+	int difx=0,dify=0;
+	int Route=12;
+	int xloca[12]={0,0,2,2,2,2,2,-2,-2,0,0,3}; 
+	int yloca[12]={0,8,8,7,5,3,2, 2, 8,8,6,6};
+    
+    GO_Stright();
+    delay_ms(200);
+    GO_Brake();
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+    
+    for(i=1;i<Route;i++)
+	{
+        if(xloca[i-1] == 2 && yloca[i-1] == 7)
+        {
+            // RF RB > L2
+            GO_Brake();
+            Circle_grab_R_F();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_R_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        if(xloca[i-1] == 2 && yloca[i-1] == 5)
+        {
+            // LF LB > L3
+            GO_Brake();
+            Circle_grab_L_F();
+            Circle_put_L_3();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_L_B();
+            Circle_put_L_3();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        if(xloca[i-1] == 2 && yloca[i-1] == 3)
+        {
+            // LB RB > L2
+            GO_Brake();
+            Circle_grab_L_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_R_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            for(j = 0; j < 15; j++)
+            {
+                delay_ms(1000);
+            }
+        }
+        
+		difx=xloca[i]-xloca[i-1];
+		dify=yloca[i]-yloca[i-1];  
+		select_mode(difx,dify); 
+	}
+    GO_Brake();
+    
+    // (3,6)
+    // LB > R3  RB > L2
+    GO_Brake();
+    Circle_grab_L_B();
+    Circle_put_R_3();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+            
+    Circle_grab_R_B();
+    Circle_put_L_2();
+    delay_ms(1000);
+    Circle_back_to_mid();
+    delay_ms(500);
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04 = 85;//收集装置
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN02_R(void)
+*功能说明: 大车路径 02
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN02_R()
+{
+    u8 i;
+	int difx=0,dify=0;
+	int Route=9;
+	int xloca[9]={0,0,-1,-1,3,2,0,0,-3}; 
+	int yloca[9]={0,3, 3, 2,2,7,7,6, 6};
+    
+    GO_Stright();
+    delay_ms(200);
+    GO_Brake();
+    
+    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+	PWM04=32;//收集装置放下,原36
+    delay_ms(1200);
+    TIM_Cmd(TIM3, DISABLE);
+    
+    for(i=1;i<Route;i++)
+	{
+        if(xloca[i-1] == 3 && yloca[i-1] == 2)
+        {
+            // LB RB > L2
+            GO_Brake();
+            Circle_grab_L_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_R_B();
+            Circle_put_L_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        if(xloca[i-1] == 2 && yloca[i-1] == 7)
+        {
+            // LB RB > R2
+            GO_Brake();
+            Circle_grab_L_B();
+            Circle_put_R_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+            
+            Circle_grab_R_B();
+            Circle_put_R_2();
+            delay_ms(1000);
+            Circle_back_to_mid();
+            delay_ms(500);
+        }
+        
+        if(xloca[i-1] == 3 && yloca[i-1] == 2)
+        {
+            GO_Down();   // 倒车
+            delay_ms(500);
+            xloca[i-1] = 2;
+            yloca[i-1] = 2;
+        }
+        
+		difx=xloca[i]-xloca[i-1];
+		dify=yloca[i]-yloca[i-1];  
+		select_mode(difx,dify); 
+	}
+    GO_Brake();
+    
+    GO_Stright();
+    delay_ms(1000);
+    GO_Down();
+    delay_ms(1500);
+    
+//    TIM_Cmd(TIM3, ENABLE);  //使能TIMx外设 //舵机工作时使能，不工作时关闭
+//	PWM04 = 85;//收集装置
+//    delay_ms(1200);
+//    TIM_Cmd(TIM3, DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN03_R(void)
+*功能说明: 大车路径 03
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN03_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN04_R(void)
+*功能说明: 大车路径 04
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN04_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN05_R(void)
+*功能说明: 大车路径 05
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN05_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN06_R(void)
+*功能说明: 大车路径 06
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN06_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN07_R(void)
+*功能说明: 大车路径 07
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN07_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN08_R(void)
+*功能说明: 大车路径 08
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN08_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN09_R(void)
+*功能说明: 大车路径 09
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN09_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN10_R(void)
+*功能说明: 大车路径 10
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN10_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN11_R(void)
+*功能说明: 大车路径 11
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN11_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN12_R(void)
+*功能说明: 大车路径 12
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN12_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN13_R(void)
+*功能说明: 大车路径 13
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN13_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN14_R(void)
+*功能说明: 大车路径 14
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN14_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: void FUN15_R(void)
+*功能说明: 大车路径 15
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void FUN15_R()
+{
+}
+
+/**********************************************************************************************************
+*函 数 名: u16 GetVolt(u16 advalue)
+*功能说明: 采集数据转化成电压值
+*形    参：u16 advalue
+*返 回 值: (u16)(advalue * 3300 / 4096
+**********************************************************************************************************/
+u16 GetVolt(u16 advalue)
+{
+	return (u16)(advalue * 3300 / 4096);
+}
+
+/**********************************************************************************************************
+*函 数 名: void BSP_init()
+*功能说明: 外设初始化
+*形    参：无
+*返 回 值: 无
+**********************************************************************************************************/
+void BSP_init(void)
+{
+	GPIO_lcd();
+	GPIOA_Config();         //初始化GPIOA
+	GPIOB_Config();					//初始化GPIOB
+	GPIOC_Config();         //初始化GPIOC
+	GPIOD_Config();					//初始化GPIOD
+	GPIOE_Config();					//初始化GPIOE
+	GPIOF_Config();					//初始化GPIOF
+	ADC1_Configuration();
+	DMA_Configuration();
+	TIM1_Configuration();
+	TIM2_Configuration();
+	TIM3_Configuration();
+	TIM4_Configuration();
+	//USART3_Configuration();
+	EXTI_Configuration();
+	NVIC_Configuration();
+	TIM_Cmd(TIM1, ENABLE);  //使能TIMx外设
+	TIM_Cmd(TIM2, DISABLE);  //使能TIMx外设
+	TIM_Cmd(TIM3, DISABLE);	//使能TIMx外设
+	TIM_Cmd(TIM4, DISABLE);  //使能TIMx外设
+	TIM_CtrlPWMOutputs(TIM1, DISABLE); //TIM1_OC通道输出PWM（一定要加）
+	TIM_CtrlPWMOutputs(TIM4, DISABLE); //TIM4_OC通道输出PWM（一定要加）
+}
+
+/**********************************************************************************************************/
+int main(void)
+{	
+	u8 mid_ID=255;
+
+	mode=1;	
+	SysTick_Initaize();
+ 	BSP_init();	
+	ADC_SoftwareStartConvCmd(ADC1,ENABLE);
+	DMA_Cmd(DMA1_Channel1,ENABLE); //启动DMA通道
+	
+	while(1)
+	{
+		FUNID_read();
+		mid_ID=FUN_ID;
+		delay_ms(10);
+		FUNID_read();
+		if( mid_ID == FUN_ID) break;
+	} 
+	MOTOR_L_IN1(1);MOTOR_L_IN2(1);//左电机输出悬空
+	MOTOR_R_IN3(1);MOTOR_R_IN4(1);//右电机输出悬空 
+	CPU_WORK_LED(1);
+	TIM_CtrlPWMOutputs(TIM1, ENABLE);
+    //TIM_CtrlPWMOutputs(TIM4, ENABLE);
+    TIM_Cmd(TIM2, ENABLE);//使能TIMx外设
+    Steering_init();//舵机位置初始化--机械臂和收集装置都处于直立状态
+	   //Circle_back_to_mid();
+	
+//    FUN16();
+ 	if(FUN_ID==0)//传感器滤波值
+ 	{
+ 		//FUN00();
+		FUN00_T();
+        //FUN00_R();
+ 	}
+ 	else if(FUN_ID==1)//传感器01值
+ 	{
+		//FUN01();
+		FUN01_T();//2023.2.24原本为测试传感器的值，现在测量高速
+    //FUN01_R();
+ 	}
+	 else if(FUN_ID==2)//电机无矫正直行测试
+ 	{
+ 		//FUN02();
+		FUN02_T();
+    //    FUN02_R();
+ 	}
+	 else if(FUN_ID==3)//右转
+ 	{
+ 		//FUN03();
+		//FUN03_T();
+        FUN03_T();
+ 	}
+	else if(FUN_ID==4)//左转
+ 	{
+ 		//FUN04();
+		FUN04_T();
+        //FUN04_R();
+ 	}
+	 else if(FUN_ID==5)//矫正直行
+ 	{
+ 		//FUN05();
+		FUN05_T();
+        //FUN05_R();
+ 	}
+	 else if(FUN_ID==6)//4*4左转5圈
+ 	{
+
+ 	//FUN06();
+	FUN06_T();
+        //FUN06_R();
+ 	}
+	else if(FUN_ID==7)//4*4右转5圈
+ 	{
+ 		//FUN07();
+		FUN07_T();
+        //FUN07_R();
+ 	}
+	else if(FUN_ID==8)//左下角开始6*6日字型
+ 	{
+ 		//FUN08();
+		FUN08_T();
+        //FUN08_R();
+ 	}
+	else if(FUN_ID==9)//中间走抓圆环
+ 	{
+ 		FUN09();
+        //FUN09_R();
+ 	}
+	else if(FUN_ID==10)
+ 	{
+ 		FUN10();
+        //FUN10_R();
+ 	}
+	else if(FUN_ID==11)
+ 	{
+ 		FUN11();
+        //FUN11_R();
+ 	}
+	else if(FUN_ID==12)
+ 	{
+ 		FUN12();
+        //FUN12_R();
+ 	}		
+	else if(FUN_ID==13)
+ 	{
+		FUN13();
+        //FUN13_R();
+	}
+	else if(FUN_ID==14)
+ 	{
+		FUN14();
+        //FUN14_R();
+	}
+ 	else if(FUN_ID==15)//圆环抓取可靠性测试
+ 	{
+ 		FUN15_T();
+        //FUN15_R();
+ 	} 	
+ 	
+	TIM_Cmd(TIM2, DISABLE);  //使能TIMx外设
+	CPU_WORK_LED(1);
+	while(1)
+	{
+	}
+}
+
